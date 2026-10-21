@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Muse as the TV's assistant (MuseAssistService). -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:recognitionService="dev.tvlauncher.muse.assist.MuseRecognitionService"
+    android:sessionService="dev.tvlauncher.muse.assist.MuseAssistSessionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false" />

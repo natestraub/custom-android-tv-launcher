@@ -1,0 +1,42 @@
+# Run `mise install` once, then `mise tasks` to see everything.
+# Your TV's address goes in mise.local.toml (git-ignored), e.g.:
+#   [env]
+#   TV_ADB = "192.168.1.50:5555"
+[tools]
+java = "temurin-17.0.20+101"
+
+[env]
+ANDROID_HOME = "{{env.HOME}}/Library/Android/sdk"
+
+[tasks.test]
+description = "Run the JVM unit tests"
+run = "./gradlew testDebugUnitTest"
+
+[tasks.build]
+description = "Build the release APK"
+run = "./gradlew assembleRelease"
+
+[tasks.install]
+description = "Build, install on the TV, and make it the home screen"
+depends = ["build"]
+run = "scripts/install.sh"
+
+[tasks.wallpapers]
+description = "Resize a folder of photos and push them to the TV as wallpapers (wallpapers <folder> [--replace])"
+run = "scripts/wallpapers.sh"
+
+[tasks.assistant]
+description = "Choose what the remote's mic button talks to: muse | google (no argument: show)"
+run = "scripts/assistant-role.sh"
+
+[tasks.muse-token]
+description = "Send the Muse SDK token from the macOS Keychain to the TV (--status, --clear, --forget, --unpair)"
+run = "scripts/muse-token.sh"
+
+[tasks.asr-key]
+description = "Send the Meta Model API key (speech-to-text) from the macOS Keychain to the TV (--status, --clear, --forget)"
+run = "scripts/meta-asr-key.sh"
+
+[tasks.bench]
+description = "Benchmark the launcher on the TV (cold/hot start, scroll jank, idle cost, memory)"
+run = "scripts/bench.sh"
