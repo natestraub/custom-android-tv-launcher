@@ -1,5 +1,12 @@
 # Custom Android TV Launcher
 
+> **Disclaimer:** This is a personal hobby project, shared as is with no warranty. It isn't
+> affiliated with or endorsed by TCL, Google or Meta. Their names and the logos bundled here
+> belong to them. Setting it up changes your TV's settings and apps over adb: you're responsible
+> for your own device, and anything you do with it is at your own risk. The Muse integration and
+> the remote's mic handoff rely on undocumented behavior of Google TV and Muse, which can change
+> or stop working with any update.
+
 A fast, zero-dependency home screen for Android TV, built for (and tuned on) a TCL Google TV running
 Android TV 11. It replaced a Flutter launcher that used 356 MB of memory; this one uses 23–27 MB,
 draws the whole home screen in its first frame (~365 ms from a cold start), rotates your own photos
