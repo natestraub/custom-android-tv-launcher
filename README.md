@@ -231,3 +231,10 @@ Known limits, on the original TV at least:
 - Netflix starts at every boot: TCL's auto-start manager exempts it.
 - Muse can't press remote keys yet. On Android 11 an app can't send keys to another app; the protocol
   doc lists the options.
+
+## License
+
+[Apache License 2.0](LICENSE). The Muse gadget protocol code in `app/src/main/java/dev/tvlauncher/muse/`
+is a Kotlin port of Meta's [Muse Gadget SDK](https://github.com/facebookincubator/muse-gadget-sdk)
+(Apache-2.0); see [NOTICE](NOTICE) for what's derived from it. The bundled app logos belong to their
+owners and aren't covered by the license.
