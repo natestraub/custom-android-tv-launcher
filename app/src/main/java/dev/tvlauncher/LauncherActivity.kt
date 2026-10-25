@@ -21,6 +21,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
@@ -36,6 +37,8 @@ import dev.tvlauncher.apps.ContinueWatching
 import dev.tvlauncher.apps.AppRepository
 import dev.tvlauncher.apps.AppRowView
 import dev.tvlauncher.apps.AppTileView
+import dev.tvlauncher.firetv.FireTvHome
+import dev.tvlauncher.firetv.HomeOverlay
 import dev.tvlauncher.muse.MuseSecrets
 import dev.tvlauncher.muse.link.MuseLinkService
 import dev.tvlauncher.muse.link.MuseRuntime
@@ -62,6 +65,7 @@ class LauncherActivity : Activity() {
     private val wallpaperIo = backgroundThread("launcher-wallpaper")
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
 
+    private lateinit var root: FrameLayout
     private lateinit var appRow: AppRowView
     private lateinit var networkIcon: ImageView
     private lateinit var wallpaper: WallpaperController
@@ -81,6 +85,11 @@ class LauncherActivity : Activity() {
     private var allApps: List<AppEntry> = emptyList() // main thread
     private var knownApps: List<AppEntry> = emptyList() // io thread only
     private var appsLoaded = false
+    // Fire TV: the home screen can be lent to an overlay over Amazon's (FireTvHome); it runs
+    // while it's on screen either way.
+    private var started = false
+    private var lent = false
+    private var running = false
     private val museButton by lazy { MuseButton(this) }
     private val menus by lazy { LauncherMenus(this, menuHost) }
     private val menuHost = object : LauncherMenus.Host {
@@ -125,7 +134,7 @@ class LauncherActivity : Activity() {
             }
         }
 
-        val root = FrameLayout(this)
+        root = FrameLayout(this)
 
         val back = wallpaperView().also { root.addView(it) }
         val front = wallpaperView().also { root.addView(it) }
@@ -139,7 +148,7 @@ class LauncherActivity : Activity() {
             setPadding(8.dp, 8.dp, 8.dp, 8.dp)
             isFocusable = true
             contentDescription = getString(R.string.settings)
-            setOnClickListener { menus.showMenu() }
+            setOnClickListener { inFront { menus.showMenu() } }
         }
         root.addView(gear, FrameLayout.LayoutParams(40.dp, 40.dp, Gravity.TOP or Gravity.START).apply {
             leftMargin = 32.dp
@@ -166,7 +175,7 @@ class LauncherActivity : Activity() {
             radius = 20.dp.toFloat(),
         ).apply {
             onLaunch = ::launch
-            onLongPress = { menus.showAppMenu(it) }
+            onLongPress = { inFront { menus.showAppMenu(it) } }
             onOrderChanged = { rowPrefs.order = it }
         }
         // Bottom stack, top to bottom: quick bar (search + pins), app row, Continue watching.
@@ -176,9 +185,9 @@ class LauncherActivity : Activity() {
         quickBar = QuickBar(
             this,
             onSearch = ::openSearch,
-            onMuse = { museButton.open() },
+            onMuse = { inFront { museButton.open() } },
             onLaunch = ::openPin,
-            onLongPress = { menus.showPinnedMenu(it) },
+            onLongPress = { inFront { menus.showPinnedMenu(it) } },
             onDown = { appRow.requestFocus() },
         )
         quickBar.setUpFocus(gear.id)
@@ -197,7 +206,10 @@ class LauncherActivity : Activity() {
             onUp = { appRow.requestFocus() }
         }
         continueWatching = ContinueWatching(this, main, continueRow, CARD_W.dp, CARD_H.dp, focusScale = 1.1f)
-        continueRow.onOpen = continueWatching::open
+        continueRow.onOpen = {
+            FireTvHome.picked()
+            continueWatching.open(it)
+        }
         if (!continueWatching.hasPermission()) {
             requestPermissions(arrayOf(ContinueWatching.PERMISSION), REQUEST_TV_LISTINGS)
         }
@@ -224,10 +236,7 @@ class LauncherActivity : Activity() {
         gear.setOnKeyListener { _, keyCode, event ->
             keyCode == KeyEvent.KEYCODE_DPAD_DOWN && event.action == KeyEvent.ACTION_DOWN && quickBar.search.requestFocus()
         }
-        root.viewTreeObserver.addOnGlobalFocusChangeListener { _, focused ->
-            val inRow = focused != null && generateSequence(focused.parent) { it.parent }.any { it === continueRow }
-            if (inRow != foldOpen) setFold(inRow, animate = true)
-        }
+        root.viewTreeObserver.addOnGlobalFocusChangeListener(foldOnFocus)
         // Keep the fold closed (and correct) as the row appears, disappears or changes height.
         continueRow.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (!foldAnim.running) setFold(foldOpen, animate = false)
@@ -273,20 +282,88 @@ class LauncherActivity : Activity() {
         connectivity.registerDefaultNetworkCallback(networkCallback, main)
         // Keep the TV connected to Muse once it's paired (a cheap prefs check, off the main thread).
         io.execute { if (MuseSecrets(this).isPaired) MuseLinkService.start(this) }
+        FireTvHome.attach(homeHost)
     }
 
     override fun onStart() {
         super.onStart()
-        continueWatching.refresh()
-        wallpaper.start()
-        weather.start()
+        started = true
+        updateRunning()
     }
 
     override fun onStop() {
         super.onStop()
-        wallpaper.stop()
-        weather.stop()
+        started = false
+        updateRunning()
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Back from the overlay: take the home screen once the window is in (or soon, if it never animates).
+        if (lent) main.postDelayed(takeBackFromOverlay, TAKE_BACK_FALLBACK_MS)
+    }
+
+    override fun onEnterAnimationComplete() {
+        super.onEnterAnimationComplete()
+        if (lent) takeBackFromOverlay.run()
+    }
+
+    private val takeBackFromOverlay = object : Runnable {
+        override fun run() {
+            main.removeCallbacks(this)
+            if (lent) FireTvHome.launcherFront(window.decorView)
+        }
+    }
+
+    /** The wallpaper, clock and Continue watching run while the home screen is on screen, here or lent. */
+    private fun updateRunning() {
+        val shouldRun = started || lent
+        if (shouldRun == running) return
+        running = shouldRun
+        if (shouldRun) {
+            continueWatching.refresh()
+            wallpaper.start()
+            weather.start()
+        } else {
+            wallpaper.stop()
+            weather.stop()
+        }
+    }
+
+    private val foldOnFocus = android.view.ViewTreeObserver.OnGlobalFocusChangeListener { _, focused ->
+        val inRow = focused != null && generateSequence(focused.parent) { it.parent }.any { it === continueRow }
+        if (inRow != foldOpen) setFold(inRow, animate = true)
+    }
+
+    private val homeHost = object : HomeOverlay.Host {
+        override fun lendHome(into: ViewGroup) {
+            moveRoot { into.addView(root) }
+            // Tree listeners stay with the window they were added in; the overlay is a new one.
+            root.viewTreeObserver.addOnGlobalFocusChangeListener(foldOnFocus)
+            lent = true
+            updateRunning()
+        }
+
+        override fun takeHomeBack() {
+            lent = false
+            main.removeCallbacks(takeBackFromOverlay)
+            moveRoot { setContentView(root) }
+            updateRunning()
+        }
+
+        override fun onHomeAgain() = appRow.reset()
+    }
+
+    /** Removing a view clears the focus inside it: put the selection back where it was. */
+    private fun moveRoot(attach: () -> Unit) {
+        val focused = root.findFocus()
+        (root.parent as? ViewGroup)?.removeView(root)
+        attach()
+        if (focused?.requestFocus() != true) appRow.requestFocus()
+    }
+
+    /** Dialogs (menus, Muse) need the activity in front; while lent, bring it forward first. */
+    private fun inFront(action: () -> Unit) = FireTvHome.inFront(lent, action)
 
     /** Closed: Continue watching is pushed below the screen edge. Open: the whole stack slides up. */
     private fun setFold(open: Boolean, animate: Boolean) {
@@ -316,6 +393,7 @@ class LauncherActivity : Activity() {
     }
 
     override fun onDestroy() {
+        FireTvHome.detach(homeHost)
         unregisterReceiver(packageReceiver)
         connectivity.unregisterNetworkCallback(networkCallback)
         io.shutdownNow()
@@ -326,8 +404,8 @@ class LauncherActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Home pressed while already home.
-        if (hasWindowFocus()) appRow.reset()
+        // Home pressed while already home (not the redirect bringing us back from the overlay).
+        if (hasWindowFocus() && !intent.getBooleanExtra(FireTvHome.EXTRA_HANDOFF, false)) appRow.reset()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -384,6 +462,7 @@ class LauncherActivity : Activity() {
     }
 
     private fun openPin(key: String) {
+        FireTvHome.picked()
         val port = HdmiInputs.port(key)
         if (port != null) HdmiInputs.open(this, port) else allApps.firstOrNull { it.packageName == key }?.let(::launch)
     }
@@ -399,6 +478,7 @@ class LauncherActivity : Activity() {
     }
 
     private fun openSearch() {
+        FireTvHome.picked()
         try {
             startActivity(Intent(SearchManager.INTENT_ACTION_GLOBAL_SEARCH).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (e: Exception) {
@@ -407,6 +487,7 @@ class LauncherActivity : Activity() {
     }
 
     private fun launch(app: AppEntry) {
+        FireTvHome.picked()
         try {
             startActivity(app.launchIntent)
         } catch (e: Exception) {
@@ -466,5 +547,6 @@ class LauncherActivity : Activity() {
         private const val FOLD_MS = 220L
         private const val CARD_W = 200 // Continue watching card size, dp
         private const val CARD_H = 112
+        private const val TAKE_BACK_FALLBACK_MS = 700L
     }
 }

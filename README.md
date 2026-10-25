@@ -32,6 +32,8 @@ point your own Claude at it and have it adapt the TV-specific parts. See
   - pair the TV as a Muse gadget, then ask Muse questions from the quick bar;
   - let Muse run TV commands (open apps, switch HDMI input, media keys, volume, show a message, take
     a screenshot).
+- **Works on Fire TV too.** Fire OS won't let another app be Home, so on a Fire TV the launcher
+  covers Amazon's home screen the moment it comes up (see [Fire TV](#fire-tv)).
 - **Muse as the remote's assistant** (optional): press the mic, and the Muse "M" draws itself at the
   top of the screen while you talk. Your words stream into a small bubble through Meta's realtime
   speech-to-text, and Muse's answer appears under them.
@@ -52,8 +54,9 @@ Measure it yourself with `mise run bench` (cold and hot start, scroll jank, idle
 
 ## Requirements
 
-- An Android TV device with **Android TV 11 or newer** and developer options. Only a TCL Smart TV Pro
-  (MediaTek MT5889, 32-bit userland, ~2.7 GB RAM) has been tested.
+- An Android TV device with **Android TV 11 or newer** and developer options. Tested on a TCL Smart TV
+  Pro (MediaTek MT5889, 32-bit userland, ~2.7 GB RAM) and a Fire TV Edition TV (Fire OS 8.1.8, Android
+  11, ~1.8 GB RAM).
 - A Mac. The scripts use the macOS Keychain and `sips`; ImageMagick also works for wallpapers.
 - [mise](https://mise.jdx.dev) (it installs the pinned Java 17), and the Android SDK at
   `~/Library/Android/sdk` (install it with Android Studio, or set `ANDROID_HOME` in `mise.local.toml`).
@@ -169,13 +172,48 @@ questions answered out loud in Muse's own voice.
 How the mic handoff works, in detail: [docs/atv-remote-assist-protocol.md](docs/atv-remote-assist-protocol.md).
 The Muse gadget protocol the TV speaks: [docs/muse-protocol.md](docs/muse-protocol.md).
 
+## Fire TV
+
+`mise run install` works on a Fire TV as well. Fire OS ignores the default-Home setting and always
+sends the Home button to Amazon's launcher, so this launcher uses the approach
+[Homestead](https://github.com/Sarg338/Homestead) worked out:
+
+- **Watches for Amazon's home.** The accessibility service sees which app's window comes to the front.
+  It also follows the system log for the HOME intent, which is logged a few hundred ms before Amazon's
+  home draws, so Amazon's home never shows. The log is also the only sign of a Home press while
+  Amazon's home is already in front. Reading it needs `READ_LOGS`, which the install script grants
+  over adb.
+- **Covers it at once.** After a Home press, Fire OS holds back every other app's activity starts for
+  about 5 seconds, so just starting the launcher would land late. Adding a window isn't an activity
+  start: the launcher's home screen moves into an accessibility overlay straight away and works
+  normally there.
+- **Hands back.** About 5 seconds later the launcher activity comes to the front and takes its home
+  screen back, with the same selection, scroll position and wallpaper.
+- **Leaves Settings alone.** Amazon's Settings opens by starting Home itself and then a page inside
+  Amazon's launcher. A HOME start from an app (rather than the system), or one of Amazon's own
+  launcher pages, switches the redirect off for a few seconds.
+
+An app you open in the first ~5 seconds after Home starts when Fire OS's hold ends, not at once.
+Menus and Muse bring the launcher forward first, so they wait for the hold too.
+
+The code is in `firetv/`: `HomeDecider.kt` decides, `HomeWatcher.kt` reads the log, `HomeOverlay.kt`
+is the window, and `FireTvHome.kt` ties them together. None of it runs on a TV without the
+`amazon.hardware.fire_tv` feature.
+
+Debloating a Fire TV: `pm uninstall --user 0` is refused for Amazon's apps on Fire OS 8, but
+`pm disable-user --user 0 <package>` works (`pm enable <package>` undoes it). A few packages
+(metrics, crash and log uploaders, the ads deep-link handler, the updater) are protected and can only
+be kept from running in the background. **Check each package's label and version on the TV before
+disabling it:** package names don't say what they are. `com.amazon.firebat`, for example, is Prime
+Video.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `mise run test` | JVM unit tests |
 | `mise run build` | Release APK |
-| `mise run install` | Build, install, set as home screen, turn on the accessibility service |
+| `mise run install` | Build, install, set as home screen (on a Fire TV, grant `READ_LOGS` for the Home redirect), turn on the accessibility service |
 | `mise run wallpapers <folder> [--replace]` | Resize photos and push them to the TV (`--list`, `--clear`) |
 | `mise run assistant muse\|google` | Choose what the remote's mic button talks to (no argument: show) |
 | `mise run muse-token` | Send the Muse SDK token to the TV (`--status`, `--clear`, `--forget`, `--unpair`) |
@@ -189,6 +227,7 @@ app/src/main/java/dev/tvlauncher/
 ├── LauncherActivity.kt, LauncherMenus.kt   home screen and its dialogs
 ├── apps/          app row, tile atlas, pinned strip, HDMI inputs, Continue watching
 ├── ui/            scroll math, pan/zoom, frame animator, status block (clock, weather)
+├── firetv/        Home on Fire TV: covers Amazon's home screen with ours
 ├── wallpaper/     the photo folder, crossfade and decoding
 ├── weather/       Open-Meteo client
 └── muse/          pairing (BLE), the encrypted link, chat, TV commands, assistant + voice
@@ -223,12 +262,15 @@ check on yours:
 | macOS-only tooling | `scripts/muse-token.sh`, `scripts/meta-asr-key.sh` (Keychain), `wallpapers.sh` (`sips`) | a Mac | On Linux, swap the Keychain for `secret-tool`/`pass`; wallpapers already work with ImageMagick |
 | Performance tuning | throughout (`apps/`, `wallpaper/`, `ui/`) | a 4-core, 32-bit, ~2.7 GB TV | Usually fine as is; run `mise run bench` before and after changes |
 | Benchmark app | `scripts/bench.sh` (uses YouTube for the hot-start test) | the owner's apps | Any installed app works |
+| Fire TV Home redirect | `firetv/` (Amazon's launcher is found at runtime; `HomeDecider.SETTINGS_GRACE_MS`, `FireTvHome.HANDOFF_MS`) | Fire OS 8.1 (Android 11) | `adb logcat -b system -s ActivityTaskManager` while pressing Home: the HOME start should come `from uid 0` or `1000`. Time how long after Home an app's start is held back |
 | Debloat list | Setup step 2 | every maker ships different apps | Have Claude list the packages with what each one is, and remove only what you can name |
 
 Known limits, on the original TV at least:
 - Streaming apps show as black in `tv.screenshot`. Android blanks DRM-protected video in every
   capture.
 - Netflix starts at every boot: TCL's auto-start manager exempts it.
+- Fire TV: apps opened within ~5 seconds of pressing Home wait for Fire OS's hold on activity starts
+  to end.
 - Muse can't press remote keys yet. On Android 11 an app can't send keys to another app; the protocol
   doc lists the options.
 

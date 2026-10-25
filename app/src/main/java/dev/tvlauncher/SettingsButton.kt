@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
+import dev.tvlauncher.firetv.FireTvHome
 
 /**
  * The remote's Settings button. System-wide it asks for the Google TV home
@@ -31,16 +32,22 @@ object SettingsButton {
 
 /**
  * Key-filter accessibility service: makes the Settings button work inside any app,
- * and takes screenshots when Muse asks (tv.screenshot). Subscribes to no accessibility
- * events and never reads window content; every other key passes straight through.
+ * and takes screenshots when Muse asks (tv.screenshot). On a Fire TV it also makes this
+ * launcher Home ([FireTvHome]) from which app's window is in front. It never reads window
+ * content; every other key passes straight through.
  */
 class SettingsKeyService : AccessibilityService() {
+    private var fireTvHome: FireTvHome? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         running = this
+        fireTvHome = FireTvHome.create(this)?.also { it.start() }
     }
 
     override fun onDestroy() {
+        fireTvHome?.stop()
+        fireTvHome = null
         if (running === this) running = null
         super.onDestroy()
     }
@@ -51,7 +58,11 @@ class SettingsKeyService : AccessibilityService() {
         return true
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val home = fireTvHome ?: return
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        home.onWindow(event.packageName?.toString() ?: return, event.className?.toString() ?: "")
+    }
 
     override fun onInterrupt() = Unit
 
